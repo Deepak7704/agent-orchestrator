@@ -317,6 +317,15 @@ async function runStartup(
       );
     } catch (err) {
       spinner.fail("Lifecycle worker failed to start");
+      // Clean up orchestrator since we started it but lifecycle won't work
+      if (opts?.orchestrator !== false && !reused) {
+        try {
+          const sm = await getSessionManager(config);
+          await sm.kill(sessionId).catch(() => undefined);
+        } catch {
+          /* best effort cleanup */
+        }
+      }
       throw new Error(
         `Failed to start lifecycle worker: ${err instanceof Error ? err.message : String(err)}`,
         { cause: err },
@@ -365,8 +374,9 @@ async function runStartup(
       console.log(chalk.dim("  (Dashboard will be ready in a few seconds)\n"));
     } catch (err) {
       spinner.fail("Dashboard failed to start");
-      // Clean up orchestrator since we started it but dashboard won't work
-      if (opts?.orchestrator !== false) {
+      // Clean up orchestrator if we created a new session (not reused)
+      // Only kill if we created the session, not if it was pre-existing reused
+      if (opts?.orchestrator !== false && !reused) {
         try {
           const sm = await getSessionManager(config);
           await sm.kill(sessionId).catch(() => undefined);
