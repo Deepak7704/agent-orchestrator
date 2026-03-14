@@ -378,12 +378,21 @@ async function runStartup(
       console.log(chalk.dim("  (Dashboard will be ready in a few seconds)\n"));
     } catch (err) {
       spinner.fail("Dashboard failed to start");
-      // Clean up orchestrator if we created a new session (not reused)
-      // Only kill if we created the session, not if it was pre-existing reused
+      // Clean up resources we started in this run (orchestrator and lifecycle worker)
+      // Only clean up sessions we created, not pre-existing reused ones
       if (opts?.orchestrator !== false && !reused) {
         try {
           const sm = await getSessionManager(config);
           await sm.kill(sessionId).catch(() => undefined);
+        } catch {
+          /* best effort cleanup */
+        }
+      }
+      // Stop lifecycle worker if we started it (it runs as detached process)
+      // Without cleanup, the worker continues running as an orphan
+      if (lifecycleStatus?.started) {
+        try {
+          await stopLifecycleWorker(config, projectId);
         } catch {
           /* best effort cleanup */
         }
