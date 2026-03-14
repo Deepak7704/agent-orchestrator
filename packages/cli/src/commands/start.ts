@@ -278,6 +278,7 @@ async function runStartup(
   const spinner = ora();
   let dashboardProcess: ChildProcess | null = null;
   let reused = false;
+  let orchestratorNewlyCreated = false;
 
   // Create orchestrator session FIRST (unless --no-orchestrator)
   // This ensures dashboard will find a live session when it polls /api/sessions
@@ -295,6 +296,7 @@ async function runStartup(
       reused =
         orchestratorSessionStrategy === "reuse" &&
         session.metadata?.["orchestratorSessionReused"] === "true";
+      orchestratorNewlyCreated = !reused;  // Track if we created a NEW session
       spinner.succeed(reused ? "Orchestrator session reused" : "Orchestrator session created");
     } catch (err) {
       spinner.fail("Orchestrator setup failed");
@@ -318,7 +320,8 @@ async function runStartup(
     } catch (err) {
       spinner.fail("Lifecycle worker failed to start");
       // Clean up orchestrator since we started it but lifecycle won't work
-      if (opts?.orchestrator !== false && !reused) {
+      // Only clean up if we created a NEW orchestrator session (not reused)
+      if (opts?.orchestrator !== false && orchestratorNewlyCreated) {
         try {
           const sm = await getSessionManager(config);
           await sm.kill(sessionId).catch(() => undefined);
@@ -379,11 +382,12 @@ async function runStartup(
     } catch (err) {
       spinner.fail("Dashboard failed to start");
       // Clean up resources we started in this run (orchestrator and lifecycle worker)
-      // Only clean up sessions we created, not pre-existing reused ones
-      if (opts?.orchestrator !== false && !reused) {
+      // Only clean up if we created a NEW orchestrator session (not reused)
+      // Pass { purgeOpenCode: true } to match `ao stop` behavior and avoid stray sessions
+      if (opts?.orchestrator !== false && orchestratorNewlyCreated) {
         try {
           const sm = await getSessionManager(config);
-          await sm.kill(sessionId).catch(() => undefined);
+          await sm.kill(sessionId, { purgeOpenCode: true }).catch(() => undefined);
         } catch {
           /* best effort cleanup */
         }
