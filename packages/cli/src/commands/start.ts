@@ -336,33 +336,37 @@ async function runStartup(
   // Start dashboard LAST (unless --no-dashboard)
   // By this point, orchestrator session exists and is ready for dashboard to poll
   if (opts?.dashboard !== false) {
-    if (opts?.autoPort) {
-      // Port was auto-selected during config generation — if it's now busy
-      // (race condition), find another free port instead of erroring.
-      if (!(await isPortAvailable(port))) {
-        const newPort = await findFreePort(DEFAULT_PORT);
-        if (newPort === null) {
-          throw new Error(
-            `No free port found in range ${DEFAULT_PORT}–${DEFAULT_PORT + MAX_PORT_SCAN - 1}.`,
-          );
-        }
-        port = newPort;
-      }
-    } else {
-      await preflight.checkPort(port);
-    }
-    const webDir = findWebDir();
-    if (!existsSync(resolve(webDir, "package.json"))) {
-      throw new Error("Could not find @composio/ao-web package. Run: pnpm install");
-    }
-    await preflight.checkBuilt(webDir);
-
-    if (opts?.rebuild) {
-      await cleanNextCache(webDir);
-    }
-
-    spinner.start("Starting dashboard");
+    // Wrap entire dashboard startup block in try/catch to handle pre-flight failures
+    // (port checks, web dir lookup, build preflight) which happen before
+    // startDashboard() is called. This ensures orchestrator is cleaned up if we
+    // created it, regardless of where in the dashboard startup sequence the failure occurs.
     try {
+      if (opts?.autoPort) {
+        // Port was auto-selected during config generation — if it's now busy
+        // (race condition), find another free port instead of erroring.
+        if (!(await isPortAvailable(port))) {
+          const newPort = await findFreePort(DEFAULT_PORT);
+          if (newPort === null) {
+            throw new Error(
+              `No free port found in range ${DEFAULT_PORT}–${DEFAULT_PORT + MAX_PORT_SCAN - 1}.`,
+            );
+          }
+          port = newPort;
+        }
+      } else {
+        await preflight.checkPort(port);
+      }
+      const webDir = findWebDir();
+      if (!existsSync(resolve(webDir, "package.json"))) {
+        throw new Error("Could not find @composio/ao-web package. Run: pnpm install");
+      }
+      await preflight.checkBuilt(webDir);
+
+      if (opts?.rebuild) {
+        await cleanNextCache(webDir);
+      }
+
+      spinner.start("Starting dashboard");
       dashboardProcess = await startDashboard(
         port,
         webDir,
