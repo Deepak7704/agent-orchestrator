@@ -236,9 +236,12 @@ async function cleanupOrchestratorOnFailure(
   }
   try {
     const sm = await getSessionManager(config);
-    await sm.kill(sessionId, { purgeOpenCode: true }).catch(() => undefined);
-  } catch {
+    await sm.kill(sessionId, { purgeOpenCode: true }).catch((err) => {
+      console.warn(chalk.yellow("Failed to kill orchestrator session:"), err instanceof Error ? err.message : String(err));
+    });
+  } catch (err) {
     /* best effort cleanup */
+    console.warn(chalk.yellow("Session cleanup failed:"), err instanceof Error ? err.message : String(err));
   }
 }
 
@@ -398,7 +401,11 @@ async function runStartup(
       spinner.fail("Dashboard failed to start");
       // Stop lifecycle worker if we started it before dashboard failure
       if (lifecycleStatus?.started) {
-        await stopLifecycleWorker(config, projectId).catch(() => undefined);
+        try {
+          await stopLifecycleWorker(config, projectId);
+        } catch (err) {
+          console.warn(chalk.yellow("Failed to stop lifecycle worker:"), err instanceof Error ? err.message : String(err));
+        }
       }
       await cleanupOrchestratorOnFailure(config, sessionId, orchestratorNewlyCreated);
       throw new Error(
