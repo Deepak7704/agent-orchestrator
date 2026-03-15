@@ -252,7 +252,6 @@ async function startDashboard(
   configPath: string | null,
   terminalPort?: number,
   directTerminalPort?: number,
-  onDashboardError?: () => Promise<void>,
 ): Promise<ChildProcess> {
   const env = await buildDashboardEnv(port, configPath, terminalPort, directTerminalPort);
 
@@ -392,7 +391,6 @@ async function runStartup(
         config.configPath,
         config.terminalPort,
         config.directTerminalPort,
-        async () => cleanupOrchestratorOnFailure(config, sessionId, orchestratorNewlyCreated),
       );
       spinner.succeed(`Dashboard starting on http://localhost:${port}`);
       console.log(chalk.dim("  (Dashboard will be ready in a few seconds)\n"));
