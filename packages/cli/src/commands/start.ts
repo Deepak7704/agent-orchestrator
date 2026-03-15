@@ -221,6 +221,28 @@ async function handleUrlStart(
 }
 
 /**
+ * Cleanup orchestrator session on failure.
+ * Called when dashboard or lifecycle worker fails to start.
+ * Only cleans up if we created a NEW session (not reused).
+ */
+async function cleanupOrchestratorOnFailure(
+  config: OrchestratorConfig,
+  projectId: string,
+  orchestratorNewlyCreated: boolean,
+): Promise<void> {
+  // Only clean up if we created a new session (not reused)
+  if (!orchestratorNewlyCreated) {
+    return;
+  }
+  try {
+    const sm = await getSessionManager(config);
+    await sm.kill(projectId, { purgeOpenCode: true }).catch(() => undefined);
+  } catch {
+    /* best effort cleanup */
+  }
+}
+
+/**
  * Start dashboard server in the background.
  * Returns the child process handle for cleanup.
  */
@@ -230,6 +252,7 @@ async function startDashboard(
   configPath: string | null,
   terminalPort?: number,
   directTerminalPort?: number,
+  onDashboardError?: () => Promise<void>,
 ): Promise<ChildProcess> {
   const env = await buildDashboardEnv(port, configPath, terminalPort, directTerminalPort);
 
@@ -240,20 +263,21 @@ async function startDashboard(
     env,
   });
 
-  child.on("error", (err) => {
+  child.on("error", async (err) => {
     console.error(chalk.red("Dashboard failed to start:"), err.message);
     // Emit synthetic exit so callers listening on "exit" can clean up
     child.emit("exit", 1, null);
-    // IMPORTANT: Reject promise so caller's try/catch catches this error
-    // Without rejection, Promise resolves even after emit("exit"), making errors
-    // uncatchable by the try/catch in runStartup()
-    // Clean up orchestrator on spawn errors
-    cleanupOrchestratorOnFailure(config, projectId, orchestratorNewlyCreated).catch(() => {
-      /* best effort */
-    });
+    // Call cleanup callback if provided (for orchestrator cleanup)
+    if (onDashboardError) {
+      await onDashboardError().catch(() => {
+        /* best effort */
+      });
+    }
   });
 
   // Listen for "exit" event - clean up when process terminates (success or failure)
+  // The exit listener in runStartup() will handle dashboard exit.
+  // We create this promise for future use if needed.
   const exitPromise = new Promise<void>((resolve, reject) => {
     child.on("exit", (code) => {
       if (code !== 0) {
@@ -263,9 +287,11 @@ async function startDashboard(
       }
     });
   });
+  // Ignore exitPromise for now; dashboard exit is handled in runStartup()
+  void exitPromise;
 
-  // If we already have an error, the exit listener will reject
-  return child.then(() => exitPromise);
+  // Return the child process
+  return child;
 }
 
 /**
@@ -298,7 +324,6 @@ async function runStartup(
   let dashboardProcess: ChildProcess | null = null;
   let reused = false;
   let orchestratorNewlyCreated = false;
-  let orchestratorCreatedBeforeLifecycle = false;
 
   // Create orchestrator session FIRST (unless --no-orchestrator)
   // This ensures dashboard will find a live session when it polls /api/sessions
@@ -317,10 +342,10 @@ async function runStartup(
         orchestratorSessionStrategy === "reuse" &&
         session.metadata?.["orchestratorSessionReused"] === "true";
       orchestratorNewlyCreated = !reused;  // Track if we created a NEW session
-      orchestratorCreatedBeforeLifecycle = true;  // Track created BEFORE lifecycle starts
       spinner.succeed(reused ? "Orchestrator session reused" : "Orchestrator session created");
     } catch (err) {
       spinner.fail("Orchestrator setup failed");
+      // No need to cleanup here - if we couldn't create the session, nothing to clean up
       throw new Error(
         `Failed to setup orchestrator: ${err instanceof Error ? err.message : String(err)}`,
         { cause: err },
@@ -340,6 +365,7 @@ async function runStartup(
       );
     } catch (err) {
       spinner.fail("Lifecycle worker failed to start");
+      await cleanupOrchestratorOnFailure(config, projectId, orchestratorNewlyCreated);
       throw new Error(
         `Failed to start lifecycle worker: ${err instanceof Error ? err.message : String(err)}`,
         { cause: err },
@@ -381,22 +407,25 @@ async function runStartup(
       }
 
       spinner.start("Starting dashboard");
-      dashboardProcess = await startDashboard(
+      dashboardProcess = startDashboard(
         port,
         webDir,
         config.configPath,
         config.terminalPort,
         config.directTerminalPort,
+        async () => cleanupOrchestratorOnFailure(config, projectId, orchestratorNewlyCreated),
       );
       spinner.succeed(`Dashboard starting on http://localhost:${port}`);
       console.log(chalk.dim("  (Dashboard will be ready in a few seconds)\n"));
     } catch (err) {
       spinner.fail("Dashboard failed to start");
+      await cleanupOrchestratorOnFailure(config, projectId, orchestratorNewlyCreated);
       throw new Error(
         `Failed to start dashboard: ${err instanceof Error ? err.message : String(err)}`,
         { cause: err },
       );
     }
+  }
 
   // Print summary
   console.log(chalk.bold.green("\n✓ Startup complete\n"));
@@ -440,24 +469,7 @@ async function runStartup(
       }
       process.exit(code ?? 0);
     });
-/**
- * Cleanup orchestrator session on failure.
- * Called when dashboard or lifecycle worker fails to start.
- * Only cleans up if we created a NEW session (not reused).
- */
-async function cleanupOrchestratorOnFailure(
-  config: OrchestratorConfig,
-  projectId: string,
-  orchestratorNewlyCreated: boolean,
-): Promise<void> {
-  try {
-    const sm = await getSessionManager(config);
-    await sm.kill(projectId, { purgeOpenCode: true }).catch(() => undefined);
-  } catch {
-    /* best effort cleanup */
   }
-}
-
 }
 
 /**
