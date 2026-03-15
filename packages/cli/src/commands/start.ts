@@ -265,31 +265,8 @@ async function startDashboard(
 
   child.on("error", async (err) => {
     console.error(chalk.red("Dashboard failed to start:"), err.message);
-    // Call cleanup callback first, then emit exit after it completes
-    if (onDashboardError) {
-      await onDashboardError().catch(() => {
-        /* best effort */
-      });
-    }
-    // Emit synthetic exit after cleanup completes so callers can detect the failure
+    // Emit synthetic exit so callers can detect the failure
     child.emit("exit", 1, null);
-  });
-
-  // Listen for "exit" event - clean up when process terminates (success or failure)
-  // The exit listener in runStartup() will handle dashboard exit.
-  // We create this promise for future use if needed.
-  const exitPromise = new Promise<void>((resolve, reject) => {
-    child.on("exit", (code) => {
-      if (code !== 0) {
-        reject(new Error(`Dashboard exited with code ${code}`));
-      } else {
-        resolve();
-      }
-    });
-  });
-  // Catch promise rejections to avoid unhandled rejection crashes in Node.js 20+
-  void exitPromise.catch(() => {
-    // Silently handle rejection - dashboard exit is handled by runStartup() listener
   });
 
   // Explicit return to help TypeScript inference
