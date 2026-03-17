@@ -41,6 +41,7 @@ function mockPtySpawn(
   // Dynamically import node-pty for real PTY creation in tests
   // Using require() here is intentional to work around top-level await issues
   // in test context where node-pty is available as a native module
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const pty = require("node-pty");
   return pty.spawn(file, args as string[], options);
 }

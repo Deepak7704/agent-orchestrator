@@ -10,9 +10,6 @@
 
 import { describe, it, expect, vi } from "vitest";
 
-// Mock console.error to track error messages
-const mockConsoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-
 describe("graceful node-pty failure handling", () => {
   // Note: These tests cannot directly test the top-level import failure handling
   // because the try-catch block runs at module load time, before any tests run.
