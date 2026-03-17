@@ -23,32 +23,7 @@ import { createObserverContext, inferProjectId } from "./terminal-observability.
 // Dynamically import node-pty with graceful fallback for missing prebuilt binaries
 // This allows the dashboard to start on platforms where node-pty doesn't have
 // prebuilt binaries (e.g., linux-arm64 without build tools)
-
-// Type for PTY instance (defined here to avoid top-level await type issues)
-interface IPty {
-  onData(data: string): void;
-  onExit(callback: (event: { exitCode: number; signal?: number }) => void): void;
-  write(data: string): void;
-  resize(cols: number, rows: number): void;
-  kill(): void;
-}
-
-// Proper function signature for pty.spawn
-interface PtyOptions {
-  name?: string;
-  cols?: number;
-  rows?: number;
-  cwd?: string;
-  env?: NodeJS.ProcessEnv;
-}
-
-type PtySpawnFn = (
-  file: string,
-  args: ReadonlyArray<string> | string,
-  options?: PtyOptions,
-) => IPty;
-
-let ptySpawn: PtySpawnFn | null = null;
+let ptySpawn: unknown = null;
 
 try {
   const pty = await import("node-pty");
@@ -74,7 +49,7 @@ try {
 
 interface TerminalSession {
   sessionId: string;
-  pty: IPty | null;
+  pty: unknown;
   ws: WebSocket;
 }
 
@@ -236,11 +211,21 @@ export function createDirectTerminalServer(tmuxPath?: string): DirectTerminalSer
       TMPDIR: process.env.TMPDIR || "/tmp",
     };
 
-    let pty: IPty;
+    let pty: unknown;
     try {
       console.log(`[DirectTerminal] Spawning PTY: tmux attach-session -t ${tmuxSessionId}`);
 
-      pty = ptySpawn(TMUX, ["attach-session", "-t", tmuxSessionId], {
+      pty = (ptySpawn as (
+        file: string,
+        args: readonly string[],
+        options: {
+          name?: string;
+          cols?: number;
+          rows?: number;
+          cwd?: string;
+          env?: NodeJS.ProcessEnv;
+        },
+      ) => unknown)(TMUX, ["attach-session", "-t", tmuxSessionId], {
         name: "xterm-256color",
         cols: 80,
         rows: 24,
@@ -296,14 +281,14 @@ export function createDirectTerminalServer(tmuxPath?: string): DirectTerminalSer
     };
 
     // PTY -> WebSocket
-    pty.onData((data) => {
+    (pty as { onData: (data: string) => void }).onData((data) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(data);
       }
     });
 
     // PTY exit
-    pty.onExit(({ exitCode }) => {
+    (pty as { onExit: (event: { exitCode: number }) => void }).onExit(({ exitCode }) => {
       console.log(`[DirectTerminal] PTY exited for ${sessionId} with code ${exitCode}`);
       // Guard against stale exits: only delete if this pty is still the active one.
       // A new connection may have already replaced this session entry.
@@ -325,7 +310,7 @@ export function createDirectTerminalServer(tmuxPath?: string): DirectTerminalSer
         try {
           const parsed = JSON.parse(message) as { type?: string; cols?: number; rows?: number };
           if (parsed.type === "resize" && parsed.cols && parsed.rows) {
-            pty.resize(parsed.cols, parsed.rows);
+            (pty as { resize: (cols: number, rows: number) => void }).resize(parsed.cols, parsed.rows);
             return;
           }
         } catch {
@@ -334,7 +319,7 @@ export function createDirectTerminalServer(tmuxPath?: string): DirectTerminalSer
       }
 
       // Normal terminal input
-      pty.write(message);
+      (pty as { write: (data: string) => void }).write(message);
     });
 
     // WebSocket close
@@ -345,7 +330,7 @@ export function createDirectTerminalServer(tmuxPath?: string): DirectTerminalSer
         activeSessions.delete(sessionId);
       }
       recordDisconnect("success", "ws_close");
-      pty.kill();
+      (pty as { kill: () => void }).kill();
     });
 
     // WebSocket error
@@ -365,13 +350,13 @@ export function createDirectTerminalServer(tmuxPath?: string): DirectTerminalSer
         sessionId,
         reason: err.message,
       });
-      pty.kill();
+      (pty as { kill: () => void }).kill();
     });
   });
 
   function shutdown() {
     for (const [, session] of activeSessions) {
-      session.pty.kill();
+      (session.pty as { kill: () => void }).kill();
       session.ws.close(1001, "Server shutting down");
     }
     server.close();
