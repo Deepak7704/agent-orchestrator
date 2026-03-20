@@ -8,6 +8,7 @@
 
 | File | Description |
 |------|-------------|
+| [`github-api-rate-limit-mitigation.md`](./github-api-rate-limit-mitigation.md) | **GitHub API rate limit mitigation** — analysis of current API usage, three-layer mitigation strategy (request throttling, GraphQL consolidation, webhook-driven updates), and 5-phase implementation plan |
 | [`design-brief.md`](./design-brief.md) | **Main design brief** — competitive analysis, full color palette, typography, all component specs, anti-patterns, implementation stack recommendation, and current codebase audit |
 | [`session-detail-design-brief.md`](./session-detail-design-brief.md) | Design spec for `/sessions/[id]` — the single-agent investigation view |
 | [`orchestrator-terminal-design-brief.md`](./orchestrator-terminal-design-brief.md) | Design spec for the orchestrator terminal — full-viewport command center with status strip |
