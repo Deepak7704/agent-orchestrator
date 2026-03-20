@@ -458,8 +458,9 @@ async function handlePRWebhook(event: GitHubWebhookEvent): Promise<void> {
       break;
 
     case 'synchronize':
-      // Only invalidate CI-related data
-      prCache.updatePartial(cacheKey, { ciChecks: null, ciStatus: null });
+      // New commit changes all PR data: diff stats, mergeability, conflicts, head SHA
+      // Invalidate entire cache entry to avoid stale data display
+      prCache.delete(cacheKey);
       break;
   }
 
