@@ -25,36 +25,6 @@ const TEST_HASH_SESSION = `abcdef123456-${TEST_SESSION}`;
 let terminal: DirectTerminalServer;
 let port: number;
 
-// Mock ptySpawn function for tests - creates a real PTY using node-pty
-// This is needed because createDirectTerminalServer requires a ptySpawn function
-function mockPtySpawn(
-  file: string,
-  args: readonly string[],
-  options: {
-    name?: string;
-    cols?: number;
-    rows?: number;
-    cwd?: string;
-    env?: NodeJS.ProcessEnv;
-  },
-): IPty {
-  // Dynamically import node-pty for real PTY creation in tests
-  // Using require() here is intentional to work around top-level await issues
-  // in test context where node-pty is available as a native module
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const pty = require("node-pty");
-  return pty.spawn(file, args as string[], options);
-}
-
-// IPty interface (matching the one in direct-terminal-ws.ts)
-interface IPty {
-  onData(callback: (data: string) => void): void;
-  onExit(callback: (event: { exitCode: number; signal?: number }) => void): void;
-  write(data: string): void;
-  resize(cols: number, rows: number): void;
-  kill(): void;
-}
-
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -146,7 +116,7 @@ beforeAll(() => {
   });
 
   // Start the server on a random port
-  terminal = createDirectTerminalServer(TMUX, mockPtySpawn);
+  terminal = createDirectTerminalServer(TMUX);
   terminal.server.listen(0);
   const addr = terminal.server.address();
   port = typeof addr === "object" && addr ? addr.port : 0;
@@ -827,7 +797,7 @@ describe("server creation", () => {
   });
 
   it("can create multiple independent servers", () => {
-    const server2 = createDirectTerminalServer(TMUX, mockPtySpawn);
+    const server2 = createDirectTerminalServer(TMUX);
     server2.server.listen(0);
     const addr = server2.server.address();
     const port2 = typeof addr === "object" && addr ? addr.port : 0;

@@ -5,11 +5,6 @@
  * This bypasses ttyd and gives us control over terminal initialization,
  * allowing us to implement the XDA (Extended Device Attributes) handler
  * that tmux requires for clipboard support.
- *
- * Note: This module gracefully handles missing node-pty binary (e.g., on linux-arm64
- * without build tools). The server will exit cleanly to allow concurrently to
- * continue running the dashboard, and users can fall back to the ttyd terminal
- * on port 14800.
  */
 
 import { createServer, type Server } from "node:http";
@@ -17,74 +12,23 @@ import { spawn } from "node:child_process";
 import { WebSocketServer, WebSocket } from "ws";
 import { homedir, userInfo } from "node:os";
 import { createCorrelationId } from "@composio/ao-core";
+
+// node-pty is an optionalDependency — it requires native compilation and may
+// not be available on all platforms. Load it dynamically so the rest of the
+// server can still start even if node-pty is missing.
+/* eslint-disable @typescript-eslint/consistent-type-imports -- node-pty is optional; static import would crash if missing */
+type IPty = import("node-pty").IPty;
+let ptySpawn: typeof import("node-pty").spawn | undefined;
+/* eslint-enable @typescript-eslint/consistent-type-imports */
+try {
+  const nodePty = await import("node-pty");
+  ptySpawn = nodePty.spawn;
+} catch {
+  console.warn("[DirectTerminal] node-pty not available — direct terminal will be disabled.");
+  console.warn("[DirectTerminal] Install it with: npm install node-pty");
+}
 import { findTmux, resolveTmuxSession, validateSessionId } from "./tmux-utils.js";
 import { createObserverContext, inferProjectId } from "./terminal-observability.js";
-
-// Dynamically import node-pty with graceful fallback for missing prebuilt binaries
-// This allows the dashboard to start on platforms where node-pty doesn't have
-// prebuilt binaries (e.g., linux-arm64 without build tools)
-let ptySpawn: unknown = null;
-let nodePtyLoadError: string | null = null;
-
-// Non-null check to ensure ptySpawn is available before use
-// Returns the spawn function, throws if not available
-function ensurePtySpawn(): SpawnFunction {
-  if (!ptySpawn) {
-    throw new Error("[DirectTerminal] ptySpawn not available - node-pty failed to load");
-  }
-  return ptySpawn as SpawnFunction;
-}
-
-// Interface for PTY instance returned by node-pty.spawn
-interface IPty {
-  onData(callback: (data: string) => void): void;
-  onExit(callback: (event: { exitCode: number; signal?: number }) => void): void;
-  write(data: string): void;
-  resize(cols: number, rows: number): void;
-  kill(): void;
-}
-
-// Type for the spawn function to avoid casting at call site
-type SpawnFunction = (
-  file: string,
-  args: readonly string[],
-  options: {
-    name?: string;
-    cols?: number;
-    rows?: number;
-    cwd?: string;
-    env?: NodeJS.ProcessEnv;
-  },
-) => IPty;
-
-try {
-  const pty = await import("node-pty");
-  ptySpawn = pty.spawn;
-} catch (err) {
-  nodePtyLoadError = err instanceof Error ? err.message : String(err);
-  console.error(
-    "[DirectTerminal] Failed to load node-pty:",
-    nodePtyLoadError,
-  );
-  console.error(
-    "[DirectTerminal] This is expected on linux-arm64 without build tools installed.",
-  );
-  console.error("[DirectTerminal] Falling back to ttyd terminal on port 14800.");
-  console.error(
-    "[DirectTerminal] To enable direct-terminal, install build tools:",
-  );
-  console.error(
-    "[DirectTerminal]   sudo apt-get install build-essential && pnpm install",
-  );
-  // Exit cleanly (code 0) when running as main module, but allow tests to import
-  // This ensures concurrently continues running other processes
-  const isMainModule =
-    process.argv[1]?.endsWith("direct-terminal-ws.ts") ||
-    process.argv[1]?.endsWith("direct-terminal-ws.js");
-  if (isMainModule) {
-    process.exit(0);
-  }
-}
 
 interface TerminalSession {
   sessionId: string;
@@ -115,10 +59,7 @@ export interface DirectTerminalServer {
  * Create the direct terminal WebSocket server.
  * Separated from listen() so tests can control lifecycle.
  */
-export function createDirectTerminalServer(
-  tmuxPath: string | undefined,
-  ptySpawnFn: SpawnFunction = ensurePtySpawn(),
-): DirectTerminalServer {
+export function createDirectTerminalServer(tmuxPath?: string): DirectTerminalServer {
   const TMUX = tmuxPath ?? findTmux();
   const activeSessions = new Map<string, TerminalSession>();
   const { config, observer } = createObserverContext("terminal-direct-websocket");
@@ -130,8 +71,8 @@ export function createDirectTerminalServer(
     lastConnectedAt: null,
     lastDisconnectedAt: null,
     lastErrorAt: null,
-    lastErrorReason: null,
     lastDisconnectReason: null,
+    lastErrorReason: null,
   };
 
   const server = createServer((req, res) => {
@@ -181,6 +122,11 @@ export function createDirectTerminalServer(
   };
 
   wss.on("connection", (ws, req) => {
+    if (!ptySpawn) {
+      ws.close(1011, "Direct terminal unavailable — node-pty not installed");
+      return;
+    }
+
     const url = new URL(req.url ?? "/", "ws://localhost");
     const sessionId = url.searchParams.get("session");
 
@@ -250,25 +196,20 @@ export function createDirectTerminalServer(
       PATH: process.env.PATH || "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
       TERM: "xterm-256color",
       LANG: process.env.LANG || "en_US.UTF-8",
-      NODE_ENV: "production",
       TMPDIR: process.env.TMPDIR || "/tmp",
-    } satisfies NodeJS.ProcessEnv;
+    };
 
     let pty: IPty;
     try {
       console.log(`[DirectTerminal] Spawning PTY: tmux attach-session -t ${tmuxSessionId}`);
 
-      pty = ptySpawnFn(
-        TMUX,
-        ["attach-session", "-t", tmuxSessionId],
-        {
-          name: "xterm-256color",
-          cols: 80,
-          rows: 24,
-          cwd: homeDir,
-          env,
-        },
-      );
+      pty = ptySpawn(TMUX, ["attach-session", "-t", tmuxSessionId], {
+        name: "xterm-256color",
+        cols: 80,
+        rows: 24,
+        cwd: homeDir,
+        env,
+      });
 
       console.log(`[DirectTerminal] PTY spawned successfully`);
     } catch (err) {
@@ -318,14 +259,14 @@ export function createDirectTerminalServer(
     };
 
     // PTY -> WebSocket
-    pty.onData((data: string) => {
+    pty.onData((data) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(data);
       }
     });
 
     // PTY exit
-    pty.onExit(({ exitCode }: { exitCode: number }) => {
+    pty.onExit(({ exitCode }) => {
       console.log(`[DirectTerminal] PTY exited for ${sessionId} with code ${exitCode}`);
       // Guard against stale exits: only delete if this pty is still the active one.
       // A new connection may have already replaced this session entry.
@@ -387,9 +328,7 @@ export function createDirectTerminalServer(
         sessionId,
         reason: err.message,
       });
-      if (pty) {
-        pty.kill();
-      }
+      pty.kill();
     });
   });
 
